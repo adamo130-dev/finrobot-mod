@@ -9,6 +9,7 @@ from openai import OpenAI
 
 from io import StringIO
 import requests
+from finrobot.functional.charting import MplFinanceUtils
 
 
 # ---------- 0  CONFIG ---------------------------------------------------------
@@ -244,6 +245,7 @@ def predict(symbol: str = "AAPL",
             curday: str = today(),
             n_weeks: int = 3,
             use_basics: bool = False,
+            add_chart: bool = False,
             stream: bool = False) -> tuple[str, str]:
     steps = [n_weeks_before(curday, n) for n in range(n_weeks + 1)][::-1]
     df    = get_stock_data(symbol, steps)
@@ -251,26 +253,55 @@ def predict(symbol: str = "AAPL",
 
     prompt_info = make_prompt(symbol, df, curday, use_basics)
     answer      = chat_completion(prompt_info, stream=stream)
+    
+    chart_path = None
+    if add_chart:
+        try:
+            # Create chart using MplFinanceUtils
+            start_date = steps[0]
+            end_date = curday
+            chart_dir = "charts"
+            os.makedirs(chart_dir, exist_ok=True)
+            
+            chart_paths = MplFinanceUtils.plot_stock_price_chart(
+                ticker_symbols=[symbol],
+                start_date=start_date,
+                end_date=end_date,
+                save_dir=chart_dir,
+                indicators=['bollinger', 'rsi', 'macd'],
+                type='candle',
+                style='yahoo'
+            )
+            chart_path = chart_paths[0] if chart_paths else None
+        except Exception as e:
+            print(f"Error creating chart: {e}")
+            chart_path = None
 
-    return prompt_info, answer
+    return prompt_info, answer, chart_path
 
 
 
 # ---------- 6  SETUP HF -----------------------------------------
 
 
-def hf_predict(symbol, n_weeks, use_basics):
+def hf_predict(symbol, n_weeks, use_basics, add_chart):
     # 1. get curday
     curday = date.today().strftime("%Y-%m-%d")
     # 2. call predict
-    prompt, answer = predict(
+    prompt, answer, chart_path = predict(
         symbol=symbol.upper(),
         curday=curday,
         n_weeks=int(n_weeks),
         use_basics=bool(use_basics),
+        add_chart=bool(add_chart),
         stream=False
     )
-    return prompt, answer
+    
+    # Return chart path if available, otherwise return None
+    if chart_path and os.path.exists(chart_path):
+        return prompt, answer, chart_path
+    else:
+        return prompt, answer, None
 
 with gr.Blocks() as demo:
     gr.Markdown("FinRobot_Forecaster")
@@ -278,12 +309,14 @@ with gr.Blocks() as demo:
         symbol = gr.Textbox(label="Ticker（eg. AAPL）", value="AAPL")
         n_weeks = gr.Slider(1, 6, value=3, step=1, label="Trace Back Weeks")
         use_basics = gr.Checkbox(label="Add Basic Financials", value=False)
+        add_chart = gr.Checkbox(label="Add Chart", value=False)
     output_prompt = gr.Textbox(label="Model Prompt", lines=8)
     output_answer = gr.Textbox(label="Model Output", lines=12)
+    output_chart = gr.Image(label="Stock Chart", visible=True)
     btn = gr.Button("Run Forecaster")
     btn.click(fn=hf_predict,
-              inputs=[symbol, n_weeks, use_basics],
-              outputs=[output_prompt, output_answer])
+              inputs=[symbol, n_weeks, use_basics, add_chart],
+              outputs=[output_prompt, output_answer, output_chart])
 
 if __name__ == "__main__":
     demo.launch()
